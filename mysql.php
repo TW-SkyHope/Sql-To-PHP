@@ -1,4 +1,5 @@
 <?php
+//以下是我自己写的php操作mysql的库，具体见github https://github.com/TW-SkyHope/Sql-To-PHP
 /**
  • MySQL数据库操作类（基于PDO）- 完全封装版
  • 用户无需编写任何SQL语句，所有操作通过PHP数据类型完成
@@ -326,89 +327,134 @@ class MySQLiPDO {
      ◦ @return bool 是否成功
      */
     public function createTable($table, $fields, $options = []) {
-        $fieldDefinitions = [];
+    $fieldDefinitions = [];
+    $primaryKeys = [];
+    
+    foreach ($fields as $name => $definition) {
+        // 跳过PRIMARY KEY定义，稍后处理
+        if ($name === 'PRIMARY KEY') {
+            continue;
+        }
         
-        foreach ($fields as $name => $definition) {
-            // 简化格式: '字段名' => '类型 属性'
-            if (is_string($definition)) {
-                $fieldDefinitions[] = "`{$name}` {$definition}";
-            } 
-            // 标准格式: ['name'=>'字段', 'type'=>'类型', ...]
-            else if (is_array($definition)) {
-                $fieldDefinitions[] = $this->buildColumnDefinition($definition);
+        // 简化格式: '字段名' => '类型 属性'
+        if (is_string($definition)) {
+            $fieldDefinitions[] = "`{$name}` {$definition}";
+            // 检查字符串定义中是否包含PRIMARY KEY
+            if (strpos(strtoupper($definition), 'PRIMARY KEY') !== false) {
+                $primaryKeys[] = $name;
+            }
+        } 
+        // 标准格式: ['name'=>'字段', 'type'=>'类型', ...]
+        else if (is_array($definition)) {
+            $fieldDefinitions[] = $this->buildColumnDefinition($definition);
+            // 检查数组定义中是否有primary键
+            if (!empty($definition['primary'])) {
+                $primaryKeys[] = $definition['name'] ?? $name;
             }
         }
-        
-        $engine = $options['engine'] ?? 'InnoDB';
-        $charset = $options['charset'] ?? 'utf8mb4';
-        $sql = "CREATE TABLE IF NOT EXISTS `{$table}` (" . 
-               implode(', ', $fieldDefinitions) . 
-               ") ENGINE={$engine} DEFAULT CHARSET={$charset}";
-        
-        try {
-            return $this->internalExecute($sql) !== false;
-        } catch (PDOException $e) {
-            $this->error = "创建表失败: " . $e->getMessage();
-            return false;
+    }
+    
+    // 处理显式的PRIMARY KEY定义
+    if (isset($fields['PRIMARY KEY'])) {
+        $pkDef = $fields['PRIMARY KEY'];
+        if (is_string($pkDef)) {
+            // 格式: 'PRIMARY KEY' => '(col1, col2)'
+            $primaryKeys = [trim($pkDef, '()')];
+        } elseif (is_array($pkDef)) {
+            // 格式: 'PRIMARY KEY' => ['col1', 'col2']
+            $primaryKeys = $pkDef;
         }
     }
+    
+    $engine = $options['engine'] ?? 'InnoDB';
+    $charset = $options['charset'] ?? 'utf8mb4';
+    $collate = $options['collate'] ?? 'utf8mb4_general_ci';
+    
+    $sql = "CREATE TABLE IF NOT EXISTS `{$table}` (" . 
+           implode(', ', $fieldDefinitions);
+    
+    // 添加主键定义
+    if (!empty($primaryKeys)) {
+        $pkColumns = is_array($primaryKeys) ? 
+                    '`' . implode('`, `', $primaryKeys) . '`' : 
+                    $primaryKeys;
+        $sql .= ", PRIMARY KEY ({$pkColumns})";
+    }
+    
+    $sql .= ") ENGINE={$engine} DEFAULT CHARSET={$charset} COLLATE={$collate}";
+    
+    try {
+        return $this->internalExecute($sql) !== false;
+    } catch (PDOException $e) {
+        $this->error = "创建表失败: " . $e->getMessage();
+        return false;
+    }
+}
 
     /**
      ◦ 构建列定义
      */
     private function buildColumnDefinition($field) {
-        if (!isset($field['name']) || !isset($field['type'])) {
-            throw new InvalidArgumentException("字段定义必须包含name和type属性");
-        }
-
-        $definition = "`{$field['name']}` {$field['type']}";
-
-        // 处理长度定义
-        if (isset($field['length'])) {
-            $length = is_array($field['length']) ? 
-                     implode(',', $field['length']) : 
-                     $field['length'];
-            $definition .= "({$length})";
-        }
-
-        // 处理无符号
-        if (!empty($field['unsigned'])) {
-            $definition .= ' UNSIGNED';
-        }
-
-        // 处理非空约束
-        $nullHandled = false;
-        if (isset($field['notnull'])) {
-            $definition .= $field['notnull'] ? ' NOT NULL' : ' NULL';
-            $nullHandled = true;
-        }
-
-        // 处理默认值
-        if (array_key_exists('default', $field)) {
-            if ($field['default'] === null) {
-                $definition .= ' DEFAULT NULL';
-            } elseif (strtoupper($field['default']) === 'CURRENT_TIMESTAMP') {
-                $definition .= ' DEFAULT CURRENT_TIMESTAMP';
-            } else {
-                $defaultValue = $this->formatDefaultValue($field);
-                $definition .= " DEFAULT {$defaultValue}";
-            }
-        } elseif (!$nullHandled) {
-            $definition .= ' NULL';
-        }
-
-        // 处理自增
-        if (!empty($field['auto_increment'])) {
-            $definition .= ' AUTO_INCREMENT';
-        }
-
-        // 处理注释
-        if (isset($field['comment'])) {
-            $definition .= " COMMENT '" . str_replace("'", "''", $field['comment']) . "'";
-        }
-
-        return $definition;
+    if (!isset($field['name']) && !isset($field['type'])) {
+        throw new InvalidArgumentException("字段定义必须包含name和type属性");
     }
+    
+    $name = $field['name'] ?? '';
+    $type = $field['type'] ?? '';
+    
+    $definition = "`{$name}` {$type}";
+
+    // 处理长度定义
+    if (isset($field['length'])) {
+        $length = is_array($field['length']) ? 
+                 implode(',', $field['length']) : 
+                 $field['length'];
+        $definition .= "({$length})";
+    }
+
+    // 处理无符号
+    if (!empty($field['unsigned'])) {
+        $definition .= ' UNSIGNED';
+    }
+
+    // 处理非空约束
+    $nullHandled = false;
+    if (isset($field['notnull'])) {
+        $definition .= $field['notnull'] ? ' NOT NULL' : ' NULL';
+        $nullHandled = true;
+    }
+
+    // 处理默认值
+    if (array_key_exists('default', $field)) {
+        if ($field['default'] === null) {
+            $definition .= ' DEFAULT NULL';
+        } elseif (strtoupper($field['default']) === 'CURRENT_TIMESTAMP') {
+            $definition .= ' DEFAULT CURRENT_TIMESTAMP';
+        } else {
+            $defaultValue = $this->formatDefaultValue($field);
+            $definition .= " DEFAULT {$defaultValue}";
+        }
+    } elseif (!$nullHandled) {
+        $definition .= ' NULL';
+    }
+
+    // 处理自增
+    if (!empty($field['auto_increment'])) {
+        $definition .= ' AUTO_INCREMENT';
+    }
+
+    // 处理主键 - 只标记，不在字段级别添加PRIMARY KEY，统一在最后添加
+    if (!empty($field['primary'])) {
+        // 这里不做处理，主键会在createTable方法中统一处理
+    }
+
+    // 处理注释
+    if (isset($field['comment'])) {
+        $definition .= " COMMENT '" . str_replace("'", "''", $field['comment']) . "'";
+    }
+
+    return $definition;
+}
 
     /**
      ◦ 格式化默认值
